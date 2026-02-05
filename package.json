@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
+    "server": "node server.js",
+    "dev:multi": "node server.js & vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -16,9 +18,13 @@
     "@tailwindcss/postcss": "^4.1.18",
     "@types/three": "^0.182.0",
     "autoprefixer": "^10.4.23",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "postcss": "^8.5.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "tailwindcss": "^4.1.18",
     "three": "^0.182.0",
     "zustand": "^5.0.10"

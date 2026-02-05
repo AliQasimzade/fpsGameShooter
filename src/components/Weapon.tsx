@@ -2,141 +2,251 @@ import { useThree, useFrame } from '@react-three/fiber'
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { useStore, WEAPONS } from '../store'
+import type { WeaponType } from '../store'
 
 export const Weapon = () => {
   const { camera } = useThree()
   const ref = useRef<THREE.Group>(null)
   const [recoil, setRecoil] = useState(false)
-  
-  const currentWeapon = useStore(state => state.currentWeapon)
+
+  const currentItem = useStore(state => state.currentItem)
+  const currentSlot = useStore(state => state.currentSlot)
   const isReloading = useStore(state => state.isReloading)
   const isScoped = useStore(state => state.isScoped)
-  
-  const stats = WEAPONS[currentWeapon]
+  const isCrouching = useStore(state => state.isCrouching)
+  const peakDirection = useStore(state => state.peakDirection)
 
-  // Handle FOV for scoping
+  // Determine if we are holding a weapon or a grenade
+  const isWeapon = currentSlot < 4 && currentItem !== null
+  const stats = isWeapon ? WEAPONS[currentItem as WeaponType] : null
+
+  const localPosition = useRef(new THREE.Vector3(0.35, -0.3, -0.5))
+  const localRotation = useRef(new THREE.Euler(0, 0, 0))
+
   useEffect(() => {
-    if (isScoped && stats.scope) {
-      camera.fov = 30
+    const pc = camera as THREE.PerspectiveCamera
+    if (isScoped && stats?.scope) {
+      pc.fov = 30
     } else {
-      camera.fov = 75
+      pc.fov = 75
     }
-    camera.updateProjectionMatrix()
-  }, [isScoped, currentWeapon, stats.scope, camera])
+    pc.updateProjectionMatrix()
+  }, [isScoped, currentItem, stats, camera])
 
   useEffect(() => {
-    if (ref.current) {
-      camera.add(ref.current)
-    }
-    return () => {
-      if (ref.current) {
-        camera.remove(ref.current)
-      }
-    }
-  }, [camera])
-
-  // Recoil effect trigger (can be called from store or player)
-  // For now, let's just listen to a custom event or props, 
-  // but since we are refactoring, let's move the shoot logic entirely to Player and just animate here.
-  // We can subscribe to the store transiently or just use a simple event emitter pattern.
-  // Simpler: Player calls shoot(), store updates ammo. We detect ammo change? No.
-  // Let's attach a listener for 'mousedown' again just for visual recoil, 
-  // checking store state to ensure we actually fired.
-  useEffect(() => {
+    if (!isWeapon || !stats) return
     const handleMouseDown = () => {
       const state = useStore.getState()
-      if (!state.isReloading && state.ammo[state.currentWeapon] > 0) {
+      if (state.currentSlot < 4 && !state.isReloading && state.ammo[state.currentItem as WeaponType] > 0) {
         setRecoil(true)
         setTimeout(() => setRecoil(false), stats.fireRate / 2)
       }
     }
     document.addEventListener('mousedown', handleMouseDown)
     return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [currentWeapon, stats.fireRate])
+  }, [currentItem, isWeapon, stats])
 
-  // Animate recoil
-  useFrame((state) => {
+  useFrame(() => {
     if (!ref.current) return
-    
-    // Base position
-    const targetPos = new THREE.Vector3(0.3, -0.25, -0.5)
-    
-    // Recoil kick
+
+    const basePos = {
+      deagle: new THREE.Vector3(0.35, -0.3, -0.5),
+      smg: new THREE.Vector3(0.3, -0.28, -0.45),
+      rifle: new THREE.Vector3(0.28, -0.25, -0.5),
+      sniper: new THREE.Vector3(0.25, -0.25, -0.55),
+      grenade: new THREE.Vector3(0.3, -0.4, -0.4)
+    }
+
+    const targetLocalPos = isWeapon
+      ? (basePos[currentItem as keyof typeof basePos] || basePos.deagle).clone()
+      : basePos.grenade.clone()
+
     if (recoil) {
-      targetPos.z += 0.1
-      targetPos.y += 0.05
-      targetPos.x += 0.02
+      targetLocalPos.z += 0.12
+      targetLocalPos.y += 0.06
     }
-    
-    // Reload animation (dip down)
+
     if (isReloading) {
-      targetPos.y -= 0.5
-      targetPos.x -= 0.2
+      targetLocalPos.y -= 0.5
+      targetLocalPos.z += 0.1
     }
 
-    // Sway (movement)
-    // We can get velocity from somewhere or just use time
-    const time = state.clock.getElapsedTime()
-    targetPos.y += Math.sin(time * 2) * 0.005
-    targetPos.x += Math.cos(time * 2) * 0.005
+    if (peakDirection === 'left') {
+      targetLocalPos.x -= 0.15
+    } else if (peakDirection === 'right') {
+      targetLocalPos.x += 0.15
+    }
 
-    // Smooth lerp
-    ref.current.position.lerp(targetPos, 0.1)
-    
-    // Smooth rotation lerp for kickback
-    const targetRot = new THREE.Euler(recoil ? 0.1 : 0, recoil ? 0.1 : 0, 0)
-    ref.current.rotation.x = THREE.MathUtils.lerp(ref.current.rotation.x, targetRot.x, 0.1)
-    ref.current.rotation.y = THREE.MathUtils.lerp(ref.current.rotation.y, targetRot.y, 0.1)
+    if (isCrouching) targetLocalPos.y += 0.05
+
+    localPosition.current.lerp(targetLocalPos, 0.15)
+
+    const worldPos = localPosition.current.clone().applyMatrix4(camera.matrixWorld)
+    ref.current.position.copy(worldPos)
+    ref.current.quaternion.copy(camera.quaternion)
+
+    const targetRotX = recoil ? -0.08 : (isReloading ? -0.4 : 0)
+    localRotation.current.x = THREE.MathUtils.lerp(localRotation.current.x, targetRotX, 0.12)
+    ref.current.rotateX(localRotation.current.x)
   })
 
-  // Don't render weapon model if scoped (sniper view usually hides gun or moves it)
-  // But for simple primitives, let's keep it or hide it.
-  if (isScoped && stats.scope) return null
+  if (isScoped && stats?.scope) return null
+  if (!currentItem) return null
 
   return (
     <group ref={ref}>
-       {/* Right Arm (Trigger Hand) */}
-       <mesh position={[0.2, -0.25, 0.3]} rotation={[0.4, 0, -0.2]}>
-         <capsuleGeometry args={[0.06, 0.8]} />
-         <meshStandardMaterial color="#d2b48c" /> {/* Skin color */}
-       </mesh>
-       
-       {/* Left Arm (Support Hand) */}
-       <mesh position={[-0.2, -0.25, 0.3]} rotation={[0.4, 0.5, 0.2]}>
-         <capsuleGeometry args={[0.06, 0.8]} />
-         <meshStandardMaterial color="#d2b48c" />
-       </mesh>
-
-       {/* Weapon Model */}
-       <group position={[0, 0, 0]}>
-          {/* Main Body */}
-          <mesh castShadow receiveShadow>
-            <boxGeometry args={[0.1, 0.15, 0.6]} />
-            <meshStandardMaterial color={stats.color} />
-          </mesh>
-          
-          {/* Barrel / Detail depending on weapon type */}
-          {currentWeapon === 'smg' && (
-             <mesh position={[0, -0.1, 0.1]}>
-               <boxGeometry args={[0.05, 0.2, 0.1]} />
-               <meshStandardMaterial color="#111" />
-             </mesh>
-          )}
-          {currentWeapon === 'rifle' && (
-             <mesh position={[0, 0.05, -0.2]}>
-               <boxGeometry args={[0.02, 0.05, 0.4]} />
-               <meshStandardMaterial color="#555" />
-             </mesh>
-          )}
-          {currentWeapon === 'sniper' && (
-             <group>
-               <mesh position={[0, 0.12, 0]}>
-                  <cylinderGeometry args={[0.03, 0.04, 0.3]} rotation={[Math.PI/2, 0, 0] as any} />
-                  <meshStandardMaterial color="#000" />
-               </mesh>
-             </group>
-          )}
-       </group>
+      {isWeapon ? (
+        <group>
+          {currentItem === 'deagle' && <DeagleModel />}
+          {currentItem === 'smg' && <SMGModel />}
+          {currentItem === 'rifle' && <RifleModel />}
+          {currentItem === 'sniper' && <SniperModel />}
+        </group>
+      ) : (
+        <GrenadeModel type={currentItem as string} />
+      )}
     </group>
   )
 }
+
+const DeagleModel = () => (
+  <group>
+    {/* Body/Slide */}
+    <mesh castShadow>
+      <boxGeometry args={[0.08, 0.1, 0.3]} />
+      <meshStandardMaterial color="#C0C0C0" metalness={0.8} roughness={0.2} />
+    </mesh>
+    {/* Grip */}
+    <mesh position={[0, -0.12, 0.08]} rotation={[0.2, 0, 0]}>
+      <boxGeometry args={[0.07, 0.18, 0.08]} />
+      <meshStandardMaterial color="#111" roughness={0.9} />
+    </mesh>
+    {/* Barrel End */}
+    <mesh position={[0, 0.02, -0.16]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.02, 0.02, 0.05]} />
+      <meshStandardMaterial color="#000" metalness={0.9} />
+    </mesh>
+  </group>
+)
+
+const SMGModel = () => (
+  <group>
+    {/* Main Body */}
+    <mesh castShadow>
+      <boxGeometry args={[0.08, 0.12, 0.45]} />
+      <meshStandardMaterial color="#222" metalness={0.6} roughness={0.4} />
+    </mesh>
+    {/* Magazine */}
+    <mesh position={[0, -0.18, -0.05]} rotation={[0.1, 0, 0]}>
+      <boxGeometry args={[0.05, 0.25, 0.06]} />
+      <meshStandardMaterial color="#111" metalness={0.5} />
+    </mesh>
+    {/* Barrel */}
+    <mesh position={[0, 0, -0.28]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.025, 0.02, 0.15]} />
+      <meshStandardMaterial color="#000" metalness={0.9} />
+    </mesh>
+    {/* Stock */}
+    <mesh position={[0, -0.02, 0.3]} rotation={[-0.1, 0, 0]}>
+      <boxGeometry args={[0.06, 0.1, 0.2]} />
+      <meshStandardMaterial color="#111" />
+    </mesh>
+  </group>
+)
+
+const RifleModel = () => (
+  <group>
+    {/* Metal Body */}
+    <mesh castShadow>
+      <boxGeometry args={[0.08, 0.12, 0.55]} />
+      <meshStandardMaterial color="#222" metalness={0.7} roughness={0.3} />
+    </mesh>
+    {/* Wooden Handguard */}
+    <mesh position={[0, -0.02, -0.15]}>
+      <boxGeometry args={[0.09, 0.1, 0.25]} />
+      <meshStandardMaterial color="#5d4037" roughness={0.8} />
+    </mesh>
+    {/* Curved Magazine */}
+    <mesh position={[0, -0.2, -0.1]} rotation={[0.4, 0, 0]}>
+      <boxGeometry args={[0.06, 0.3, 0.1]} />
+      <meshStandardMaterial color="#111" metalness={0.4} />
+    </mesh>
+    {/* Barrel */}
+    <mesh position={[0, 0.03, -0.4]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.02, 0.02, 0.3]} />
+      <meshStandardMaterial color="#000" metalness={1} />
+    </mesh>
+    {/* Stock (Wood) */}
+    <mesh position={[0, -0.05, 0.35]} rotation={[-0.05, 0, 0]}>
+      <boxGeometry args={[0.07, 0.15, 0.3]} />
+      <meshStandardMaterial color="#5d4037" roughness={0.8} />
+    </mesh>
+  </group>
+)
+
+const SniperModel = () => (
+  <group>
+    {/* Body */}
+    <mesh castShadow>
+      <boxGeometry args={[0.09, 0.14, 0.7]} />
+      <meshStandardMaterial color="#1b5e20" roughness={0.6} />
+    </mesh>
+    {/* Scope */}
+    <mesh position={[0, 0.12, 0]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.04, 0.04, 0.35]} />
+      <meshStandardMaterial color="#111" metalness={0.8} />
+    </mesh>
+    {/* Long Barrel */}
+    <mesh position={[0, 0, -0.6]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.025, 0.02, 0.6]} />
+      <meshStandardMaterial color="#000" metalness={1} />
+    </mesh>
+    {/* Bolt handle */}
+    <mesh position={[0.08, 0.05, 0.1]} rotation={[0, 0, Math.PI / 2]}>
+      <cylinderGeometry args={[0.01, 0.01, 0.1]} />
+      <meshStandardMaterial color="#111" metalness={0.9} />
+    </mesh>
+  </group>
+)
+
+const GrenadeModel = ({ type }: { type: string }) => {
+  const colors: Record<string, string> = {
+    flash: 'white',
+    smoke: 'gray',
+    molotov: '#ff4400',
+    heGrenade: '#2e7d32'
+  }
+  return (
+    <group>
+      {type === 'molotov' ? (
+        <group>
+          {/* Bottle */}
+          <mesh>
+            <cylinderGeometry args={[0.05, 0.05, 0.25]} />
+            <meshStandardMaterial color="#8b4513" transparent opacity={0.7} />
+          </mesh>
+          {/* Rag */}
+          <mesh position={[0, 0.15, 0]}>
+            <boxGeometry args={[0.03, 0.1, 0.03]} />
+            <meshStandardMaterial color="white" />
+          </mesh>
+        </group>
+      ) : (
+        <group>
+          {/* Main Body */}
+          <mesh castShadow>
+            <cylinderGeometry args={[0.07, 0.07, 0.18, 16]} />
+            <meshStandardMaterial color={colors[type] || 'gray'} metalness={0.4} />
+          </mesh>
+          {/* Pin/Top */}
+          <mesh position={[0, 0.1, 0]}>
+            <cylinderGeometry args={[0.04, 0.08, 0.05, 8]} />
+            <meshStandardMaterial color="#333" />
+          </mesh>
+        </group>
+      )}
+    </group>
+  )
+}
+
+
